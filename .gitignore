@@ -1,0 +1,16 @@
+# Environnement virtuel
+venv/
+ENV/
+env/
+
+# Fichiers compilés Python
+__pycache__/
+*.py[cod]
+
+# Configuration IDE
+.vscode/
+.idea/
+
+# Fichiers système
+.DS_Store
+Thumbs.db
