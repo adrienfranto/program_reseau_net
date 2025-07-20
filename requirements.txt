@@ -1,0 +1,22 @@
+# Flask and SocketIO dependencies
+Flask==2.3.3
+Flask-SocketIO==5.3.6
+python-socketio==5.9.0
+python-engineio==4.7.1
+eventlet==0.33.3
+dnspython==2.4.2
+bidict==0.22.1
+Werkzeug==2.3.7
+Jinja2==3.1.2
+MarkupSafe==2.1.3
+itsdangerous==2.1.2
+click==8.1.7
+blinker==1.6.3
+six==1.16.0
+greenlet
+
+# Audio processing for MP3 support
+pydub==0.25.1
+
+# Optional: FFmpeg python wrapper (recommended for better audio format support)
+# ffmpeg-python==0.2.0
