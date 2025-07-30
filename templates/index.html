@@ -1,10 +1,9 @@
 <!DOCTYPE html>
 <html lang="fr">
-
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>🎵 Diffusion Audio en Continu</title>
+    <title>Radio Streaming - Client</title>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/socket.io/4.0.1/socket.io.js"></script>
     <style>
         * {
@@ -14,357 +13,440 @@
         }
 
         body {
-            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            font-family: 'Arial', sans-serif;
             background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
             min-height: 100vh;
-            color: white;
-            padding: 20px;
+            display: flex;
+            justify-content: center;
+            align-items: center;
         }
 
-        .container {
-            max-width: 1200px;
-            margin: 0 auto;
-            background: rgba(255, 255, 255, 0.1);
-            backdrop-filter: blur(10px);
+        .player-container {
+            background: rgba(255, 255, 255, 0.95);
             border-radius: 20px;
             padding: 30px;
-            box-shadow: 0 8px 32px rgba(0, 0, 0, 0.3);
-        }
-
-        .header {
+            box-shadow: 0 20px 40px rgba(0, 0, 0, 0.1);
+            max-width: 400px;
+            width: 90%;
             text-align: center;
-            margin-bottom: 40px;
         }
 
-        .header h1 {
-            font-size: 2.5rem;
+        .player-header h1 {
+            color: #333;
             margin-bottom: 10px;
-            text-shadow: 2px 2px 4px rgba(0, 0, 0, 0.3);
+            font-size: 24px;
         }
 
-        .status-bar {
-            display: flex;
-            justify-content: space-between;
-            align-items: center;
-            background: rgba(255, 255, 255, 0.1);
-            padding: 15px 20px;
-            border-radius: 15px;
-            margin-bottom: 30px;
-            backdrop-filter: blur(5px);
-        }
-
-        .status-indicator {
-            display: flex;
-            align-items: center;
-            gap: 10px;
-        }
-
-        .status-dot {
-            width: 12px;
-            height: 12px;
-            border-radius: 50%;
-            background: #ff4757;
-            animation: pulse 2s infinite;
-        }
-
-        .status-dot.streaming {
-            background: #2ed573;
-        }
-
-        @keyframes pulse {
-            0% {
-                transform: scale(1);
-                opacity: 1;
-            }
-
-            50% {
-                transform: scale(1.2);
-                opacity: 0.7;
-            }
-
-            100% {
-                transform: scale(1);
-                opacity: 1;
-            }
-        }
-
-        .listeners-count {
-            font-weight: bold;
-            color: #ffd700;
-        }
-
-        .player-section {
-            background: rgba(255, 255, 255, 0.15);
+        .connection-status {
+            padding: 8px 16px;
             border-radius: 20px;
-            padding: 30px;
-            margin-bottom: 30px;
-            text-align: center;
+            font-size: 12px;
+            margin-bottom: 20px;
+            display: inline-block;
+        }
+
+        .connected {
+            background: #4CAF50;
+            color: white;
+        }
+
+        .disconnected {
+            background: #f44336;
+            color: white;
+        }
+
+        .track-info {
+            background: #f8f9fa;
+            border-radius: 15px;
+            padding: 20px;
+            margin-bottom: 20px;
+        }
+
+        .track-title {
+            font-size: 18px;
+            font-weight: bold;
+            color: #333;
+            margin-bottom: 8px;
+        }
+
+        .track-artist {
+            font-size: 14px;
+            color: #666;
+            margin-bottom: 4px;
+        }
+
+        .track-album {
+            font-size: 12px;
+            color: #888;
         }
 
         .audio-player {
-            background: rgba(0, 0, 0, 0.3);
-            border-radius: 15px;
-            padding: 20px;
-            margin: 20px 0;
+            width: 100%;
+            margin-bottom: 20px;
+            border-radius: 10px;
         }
 
-        .play-button {
-            background: linear-gradient(45deg, #ff6b6b, #ee5a24);
-            border: none;
-            border-radius: 50%;
-            width: 80px;
-            height: 80px;
-            font-size: 30px;
+        .controls {
+            display: flex;
+            justify-content: center;
+            gap: 15px;
+            margin-bottom: 20px;
+        }
+
+        .control-btn {
+            background: #667eea;
             color: white;
+            border: none;
+            padding: 12px 16px;
+            border-radius: 50%;
             cursor: pointer;
-            margin: 20px;
+            font-size: 16px;
             transition: all 0.3s ease;
-            box-shadow: 0 4px 15px rgba(0, 0, 0, 0.3);
+            width: 48px;
+            height: 48px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
         }
 
-        .play-button:hover {
+        .control-btn:hover {
+            background: #5a6fd8;
             transform: scale(1.1);
-            box-shadow: 0 6px 20px rgba(0, 0, 0, 0.4);
         }
 
-        .play-button:disabled {
-            background: #666;
-            cursor: not-allowed;
-            transform: none;
+        .control-btn:active {
+            transform: scale(0.95);
         }
 
         .volume-control {
             display: flex;
             align-items: center;
-            justify-content: center;
-            gap: 15px;
-            margin: 20px 0;
+            gap: 10px;
+            margin-bottom: 20px;
         }
 
         .volume-slider {
-            width: 200px;
-            height: 5px;
-            background: rgba(255, 255, 255, 0.3);
-            border-radius: 5px;
+            flex: 1;
+            height: 6px;
+            border-radius: 3px;
+            background: #ddd;
             outline: none;
-            cursor: pointer;
+            -webkit-appearance: none;
         }
 
         .volume-slider::-webkit-slider-thumb {
-            appearance: none;
-            width: 15px;
-            height: 15px;
-            background: #ff6b6b;
+            -webkit-appearance: none;
+            width: 20px;
+            height: 20px;
             border-radius: 50%;
+            background: #667eea;
             cursor: pointer;
         }
 
-        .info-grid {
-            display: grid;
-            grid-template-columns: repeat(auto-fit, minmax(250px, 1fr));
-            gap: 20px;
-            margin-top: 30px;
-        }
-
-        .info-card {
-            background: rgba(255, 255, 255, 0.1);
-            padding: 20px;
-            border-radius: 15px;
-            text-align: center;
-            backdrop-filter: blur(5px);
-        }
-
-        .info-card h3 {
-            margin-bottom: 10px;
-            color: #ffd700;
-        }
-
-        .visualizer {
-            height: 100px;
-            background: rgba(0, 0, 0, 0.3);
+        .playlist {
+            max-height: 200px;
+            overflow-y: auto;
+            border: 1px solid #e0e0e0;
             border-radius: 10px;
-            margin: 20px 0;
-            display: flex;
-            align-items: end;
-            justify-content: center;
-            padding: 10px;
-            gap: 2px;
+            margin-top: 20px;
         }
 
-        .bar {
-            width: 4px;
-            background: linear-gradient(to top, #ff6b6b, #ffd700);
-            border-radius: 2px;
-            transition: height 0.1s ease;
+        .playlist-item {
+            padding: 10px 15px;
+            border-bottom: 1px solid #f0f0f0;
+            cursor: pointer;
+            transition: background-color 0.2s;
+            text-align: left;
         }
 
-        .connection-status {
-            position: fixed;
-            bottom: 20px;
-            right: 20px;
-            background: rgba(0, 0, 0, 0.8);
-            padding: 10px 20px;
-            border-radius: 10px;
+        .playlist-item:hover {
+            background-color: #f8f9fa;
+        }
+
+        .playlist-item.current {
+            background-color: #667eea;
+            color: white;
+        }
+
+        .playlist-item:last-child {
+            border-bottom: none;
+        }
+
+        .playlist-item-title {
+            font-weight: bold;
             font-size: 14px;
         }
 
-        .admin-link {
-            display: inline-block;
-            margin-top: 20px;
-            padding: 10px 20px;
-            background: rgba(255, 255, 255, 0.2);
-            border-radius: 10px;
-            text-decoration: none;
-            color: white;
-            transition: background 0.3s ease;
+        .playlist-item-artist {
+            font-size: 12px;
+            opacity: 0.8;
         }
 
-        .admin-link:hover {
-            background: rgba(255, 255, 255, 0.3);
+        .status-message {
+            background: #e3f2fd;
+            color: #1976d2;
+            padding: 10px;
+            border-radius: 8px;
+            margin-top: 15px;
+            font-size: 14px;
         }
 
-        @media (max-width: 768px) {
-            .container {
+        @media (max-width: 480px) {
+            .player-container {
                 padding: 20px;
+                margin: 10px;
             }
-
-            .header h1 {
-                font-size: 2rem;
-            }
-
-            .status-bar {
-                flex-direction: column;
+            
+            .controls {
                 gap: 10px;
             }
-
-            .play-button {
-                width: 60px;
-                height: 60px;
-                font-size: 20px;
+            
+            .control-btn {
+                width: 40px;
+                height: 40px;
+                font-size: 14px;
             }
         }
     </style>
 </head>
-
 <body>
-
-    <div class="container">
-        <div class="header">
+    <div class="player-container">
+        <div class="player-header">
             <h1>🎵 Radio Streaming</h1>
-            <p>Diffusion audio en temps réel</p>
-        </div>
-
-        <div class="status-bar">
-            <div class="status-indicator">
-                <div class="status-dot" id="statusDot"></div>
-                <span id="statusText">Déconnecté</span>
-            </div>
-            <div class="listeners-count">
-                👥 <span id="listenersCount">0</span> auditeurs
+            <div id="connectionStatus" class="connection-status disconnected">
+                Déconnecté
             </div>
         </div>
 
-        <div class="player-section">
-            <h2>🎧 Lecteur Audio</h2>
-            <div class="audio-player">
-                <!-- Ajoute ce bloc juste après la div .header -->
-                <div style="text-align:center;">
-                    <audio src="/stream" controls autoplay style="width:80%;max-width:600px;"></audio>
-                </div>
-
-                <div class="volume-control">
-                    <span>🔊</span>
-                    <input type="range" class="volume-slider" id="volumeSlider" min="0" max="100" value="50">
-                    <span id="volumeValue">50%</span>
-                </div>
-
-
-            </div>
+        <div class="track-info">
+            <div id="trackTitle" class="track-title">Aucune piste</div>
+            <div id="trackArtist" class="track-artist">-</div>
+            <div id="trackAlbum" class="track-album">-</div>
         </div>
 
-        <div class="info-grid">
-            <div class="info-card">
-                <h3>📡 Statut</h3>
-                <p id="streamStatus">En attente...</p>
-            </div>
-            <div class="info-card">
-                <h3>⏰ Durée</h3>
-                <p id="streamDuration">00:00:00</p>
-            </div>
-            <div class="info-card">
-                <h3>🎵 Qualité</h3>
-                <p id="audioQuality">44.1 kHz, Stéréo</p>
-            </div>
-            <div class="info-card">
-                <h3>📊 Connexion</h3>
-                <p id="connectionQuality">Excellente</p>
-            </div>
+        <audio id="audioPlayer" class="audio-player" controls>
+            <source src="/stream" type="audio/mpeg">
+            Votre navigateur ne supporte pas l'audio HTML5.
+        </audio>
+
+        <div class="controls">
+            <button class="control-btn" onclick="previousTrack()">⏮️</button>
+            <button class="control-btn" id="playPauseBtn" onclick="togglePlayPause()">▶️</button>
+            <button class="control-btn" onclick="nextTrack()">⏭️</button>
         </div>
 
-        <div style="text-align: center;">
-            <a href="/admin" class="admin-link">⚙️ Administration</a>
+        <div class="volume-control">
+            <span>🔊</span>
+            <input type="range" class="volume-slider" id="volumeSlider" min="0" max="100" value="50">
+            <span id="volumeValue">50%</span>
         </div>
-    </div>
 
-    <div class="connection-status" id="connectionStatus">
-        🔴 Déconnecté
+        <div class="playlist" id="playlist">
+            <!-- La playlist sera chargée ici -->
+        </div>
+
+        <div id="statusMessage" class="status-message" style="display: none;">
+        </div>
     </div>
 
     <script>
-        document.addEventListener('DOMContentLoaded', () => {
-            const socket = io();
-            const audioElement = document.querySelector('audio');
+        // Variables globales
+        let socket;
+        let isPlaying = false;
+        let currentPlaylist = [];
+        let currentIndex = 0;
 
-            // Commandes envoyées par l'admin
-            socket.on('player_command', (data) => {
-                if (!audioElement) return;
-                switch (data.command) {
-                    case 'pause':
-                        if (audioElement.paused) {
-                            audioElement.play();
-                        } else {
-                            audioElement.pause();
-                        }
-                        break;
-                    case 'next':
-                        // Ne rien faire ici, le flux sera rechargé par 'stream_started'
-                        break;
-                    case 'prev':
-                        // Ne rien faire ici, le flux sera rechargé par 'stream_started'
-                        break;
-                }
-            });
-
-            // Arrêt de la diffusion par l'admin
-            socket.on('stream_stopped', () => {
-                if (audioElement) {
-                    audioElement.pause();
-                    audioElement.currentTime = 0;
-                }
-            });
-
-            // Reprise ou changement de diffusion par l'admin
-            socket.on('stream_started', (data) => {
-                if (audioElement) {
-                    audioElement.src = '/stream?t=' + Date.now();
-                    audioElement.load();
-                    audioElement.play();
-                }
-                if (data && data.current_file) {
-                    document.getElementById('streamStatus').textContent = 'Lecture : ' + data.current_file;
-                }
-            });
-
-            // Volume slider (optionnel)
-            const volumeSlider = document.getElementById('volumeSlider');
-            if (volumeSlider && audioElement) {
-                volumeSlider.addEventListener('input', (e) => {
-                    audioElement.volume = e.target.value / 100;
-                    document.getElementById('volumeValue').textContent = e.target.value + '%';
-                });
-            }
+        // Initialisation
+        document.addEventListener('DOMContentLoaded', function() {
+            initializeSocket();
+            initializeAudioPlayer();
+            initializeVolumeControl();
+            loadPlaylist();
         });
+
+        function initializeSocket() {
+            socket = io();
+
+            socket.on('connect', function() {
+                updateConnectionStatus(true);
+                showStatus('Connecté au serveur');
+            });
+
+            socket.on('disconnect', function() {
+                updateConnectionStatus(false);
+                showStatus('Déconnecté du serveur');
+            });
+
+            socket.on('connected', function(data) {
+                console.log('Réponse du serveur:', data);
+                if (data.current_track) {
+                    updateTrackInfo(data.current_track);
+                }
+                updatePlaybackState(data.is_playing);
+            });
+
+            socket.on('track_changed', function(data) {
+                updateTrackInfo(data.track);
+                currentIndex = data.index;
+                loadPlaylist(); // Recharger pour mettre à jour l'indicateur current
+                showStatus(`Lecture: ${data.track.title}`);
+            });
+
+            socket.on('playback_state', function(data) {
+                updatePlaybackState(data.is_playing);
+            });
+        }
+
+        function initializeAudioPlayer() {
+            const audio = document.getElementById('audioPlayer');
+            
+            audio.addEventListener('play', function() {
+                updatePlaybackState(true);
+            });
+
+            audio.addEventListener('pause', function() {
+                updatePlaybackState(false);
+            });
+
+            audio.addEventListener('error', function(e) {
+                console.error('Erreur audio:', e);
+                showStatus('Erreur de lecture audio');
+            });
+        }
+
+        function initializeVolumeControl() {
+            const volumeSlider = document.getElementById('volumeSlider');
+            const volumeValue = document.getElementById('volumeValue');
+            const audio = document.getElementById('audioPlayer');
+
+            volumeSlider.addEventListener('input', function() {
+                const volume = this.value / 100;
+                audio.volume = volume;
+                volumeValue.textContent = this.value + '%';
+            });
+
+            // Volume initial
+            audio.volume = 0.5;
+        }
+
+        function updateConnectionStatus(connected) {
+            const status = document.getElementById('connectionStatus');
+            if (connected) {
+                status.textContent = 'Connecté';
+                status.className = 'connection-status connected';
+            } else {
+                status.textContent = 'Déconnecté';
+                status.className = 'connection-status disconnected';
+            }
+        }
+
+        function updateTrackInfo(track) {
+            if (track) {
+                document.getElementById('trackTitle').textContent = track.title || track.filename;
+                document.getElementById('trackArtist').textContent = track.artist || 'Inconnu';
+                document.getElementById('trackAlbum').textContent = track.album || 'Inconnu';
+            } else {
+                document.getElementById('trackTitle').textContent = 'Aucune piste';
+                document.getElementById('trackArtist').textContent = '-';
+                document.getElementById('trackAlbum').textContent = '-';
+            }
+        }
+
+        function updatePlaybackState(playing) {
+            isPlaying = playing;
+            const btn = document.getElementById('playPauseBtn');
+            const audio = document.getElementById('audioPlayer');
+
+            if (playing) {
+                btn.textContent = '⏸️';
+                audio.play().catch(e => console.error('Erreur play:', e));
+            } else {
+                btn.textContent = '▶️';
+                audio.pause();
+            }
+        }
+
+        function togglePlayPause() {
+            if (isPlaying) {
+                fetch('/api/pause');
+            } else {
+                fetch('/api/play');
+            }
+        }
+
+        function nextTrack() {
+            fetch('/api/next')
+                .then(response => response.json())
+                .then(data => {
+                    if (data.error) {
+                        showStatus(data.error);
+                    }
+                });
+        }
+
+        function previousTrack() {
+            fetch('/api/previous')
+                .then(response => response.json())
+                .then(data => {
+                    if (data.error) {
+                        showStatus(data.error);
+                    }
+                });
+        }
+
+        function loadPlaylist() {
+            fetch('/api/playlist')
+                .then(response => response.json())
+                .then(data => {
+                    currentPlaylist = data.playlist;
+                    currentIndex = data.current_index;
+                    displayPlaylist();
+                    updatePlaybackState(data.is_playing);
+                });
+        }
+
+        function displayPlaylist() {
+            const playlistDiv = document.getElementById('playlist');
+            if (currentPlaylist.length === 0) {
+                playlistDiv.innerHTML = '<div style="padding: 20px; text-align: center; color: #666;">Aucune piste dans la playlist</div>';
+                return;
+            }
+
+            let html = '';
+            currentPlaylist.forEach((track, index) => {
+                html += `
+                    <div class="playlist-item ${index === currentIndex ? 'current' : ''}" 
+                         onclick="selectTrack(${index})">
+                        <div class="playlist-item-title">${track.title || track.filename}</div>
+                        <div class="playlist-item-artist">${track.artist || 'Inconnu'}</div>
+                    </div>
+                `;
+            });
+            playlistDiv.innerHTML = html;
+        }
+
+        function selectTrack(index) {
+            fetch(`/api/select/${index}`)
+                .then(response => response.json())
+                .then(data => {
+                    if (data.error) {
+                        showStatus(data.error);
+                    }
+                });
+        }
+
+        function showStatus(message) {
+            const statusDiv = document.getElementById('statusMessage');
+            statusDiv.textContent = message;
+            statusDiv.style.display = 'block';
+            
+            setTimeout(() => {
+                statusDiv.style.display = 'none';
+            }, 3000);
+        }
+
+        // Rafraîchir la playlist toutes les 30 secondes
+        setInterval(loadPlaylist, 30000);
     </script>
 </body>
-
 </html>

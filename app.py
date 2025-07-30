@@ -1,443 +1,266 @@
-from flask import Flask, render_template, request, jsonify, Response, stream_with_context
+from flask import Flask, Response, render_template, request, jsonify, send_file
 from flask_socketio import SocketIO, emit, join_room, leave_room
 import os
 import threading
 import time
-import base64
 import wave
-from datetime import datetime
-import logging
-
-# Configuration du logging
-logging.basicConfig(level=logging.INFO)
-logger = logging.getLogger(__name__)
+import io
+import json
+from mutagen import File
+from mutagen.id3 import ID3NoHeaderError
+import base64
+import mimetypes
 
 app = Flask(__name__)
 app.config['SECRET_KEY'] = 'votre_cle_secrete_ici'
-socketio = SocketIO(app, cors_allowed_origins="*", logger=True, engineio_logger=True)
-
-# Variables globales pour la diffusion
-current_stream = None
-connected_clients = set()
-audio_buffer = []
-is_streaming = False
-stream_info = {
-    'title': 'Diffusion Audio',
-    'listeners': 0,
-    'start_time': None,
-    'status': 'stopped',
-    'current_file': None
-}
-
-DEFAULT_AUDIO_FILE = 'Agrad.mp3'
-AUDIO_FOLDER = 'audio'
-
-@app.route('/stream')
-def stream():
-    current_file = stream_info.get('current_file') or DEFAULT_AUDIO_FILE
-    audio_file = os.path.join(AUDIO_FOLDER, current_file)
-    if not os.path.exists(audio_file):
-        for f in os.listdir(AUDIO_FOLDER):
-            if f.lower().endswith(('.mp3', '.wav', '.ogg')):
-                audio_file = os.path.join(AUDIO_FOLDER, f)
-                break
-        else:
-            return "Aucun fichier audio trouvé", 404
-
-    def generate():
-        with open(audio_file, 'rb') as f:
-            while True:
-                data = f.read(8192)
-                if not data:
-                    break
-                yield data
-                time.sleep(0.01)
-
-    # Détecte le type MIME
-    if audio_file.lower().endswith('.mp3'):
-        mimetype = 'audio/mpeg'
-    elif audio_file.lower().endswith('.wav'):
-        mimetype = 'audio/wav'
-    elif audio_file.lower().endswith('.ogg'):
-        mimetype = 'audio/ogg'
-    else:
-        mimetype = 'application/octet-stream'
-
-    return Response(stream_with_context(generate()), mimetype=mimetype)
+socketio = SocketIO(app, cors_allowed_origins="*")
 
 class AudioStreamer:
     def __init__(self):
-        self.is_active = False
+        self.current_track = None
+        self.is_playing = False
+        self.clients = set()
+        self.playlist = []
+        self.current_index = 0
         self.audio_data = None
-        self.sample_rate = 44100
-        self.channels = 2
-        self.chunk_size = 1024
-        self.current_position = 0
-        self.loop_enabled = True
-
-    def start_stream(self, audio_file_path=None):
-        global is_streaming, stream_info
-
-        if not audio_file_path:
-            audio_file_path = os.path.join(AUDIO_FOLDER, DEFAULT_AUDIO_FILE)
-
-        if not os.path.exists(audio_file_path):
-            logger.warning(f"Fichier audio non trouvé: {audio_file_path}")
-            os.makedirs(AUDIO_FOLDER, exist_ok=True)
-            return self._start_simulation_mode()
-
-        try:
-            file_extension = os.path.splitext(audio_file_path)[1].lower()
-            if file_extension == '.wav':
-                success = self._load_wav_file(audio_file_path)
-            elif file_extension == '.mp3':
-                success = self._load_mp3_file(audio_file_path)
-            elif file_extension == '.ogg':
-                success = self._load_ogg_file(audio_file_path)
-            else:
-                logger.error(f"Format audio non supporté: {file_extension}")
-                return self._start_simulation_mode()
-
-            if success:
-                self.is_active = True
-                is_streaming = True
-                stream_info['status'] = 'streaming'
-                stream_info['start_time'] = datetime.now().isoformat()
-                stream_info['current_file'] = os.path.basename(audio_file_path)
-
-                streaming_thread = threading.Thread(target=self._stream_audio)
-                streaming_thread.daemon = True
-                streaming_thread.start()
-
-                logger.info(f"Diffusion audio démarrée: {audio_file_path}")
+        self.position = 0
+        self.chunk_size = 4096
+        
+    def add_track(self, filepath):
+        """Ajouter une piste à la playlist"""
+        if os.path.exists(filepath):
+            # Extraire les métadonnées
+            try:
+                audio_file = File(filepath)
+                metadata = {
+                    'filepath': filepath,
+                    'filename': os.path.basename(filepath),
+                    'title': str(audio_file.get('TIT2', [os.path.basename(filepath)])[0]) if audio_file else os.path.basename(filepath),
+                    'artist': str(audio_file.get('TPE1', ['Inconnu'])[0]) if audio_file else 'Inconnu',
+                    'album': str(audio_file.get('TALB', ['Inconnu'])[0]) if audio_file else 'Inconnu',
+                    'duration': getattr(audio_file, 'info', {}).length if audio_file else 0
+                }
+            except:
+                metadata = {
+                    'filepath': filepath,
+                    'filename': os.path.basename(filepath),
+                    'title': os.path.basename(filepath),
+                    'artist': 'Inconnu',
+                    'album': 'Inconnu',
+                    'duration': 0
+                }
+            
+            self.playlist.append(metadata)
+            return True
+        return False
+    
+    def load_current_track(self):
+        """Charger la piste actuelle"""
+        if self.playlist and 0 <= self.current_index < len(self.playlist):
+            track = self.playlist[self.current_index]
+            try:
+                with open(track['filepath'], 'rb') as f:
+                    self.audio_data = f.read()
+                self.current_track = track
+                self.position = 0
                 return True
-            else:
-                return self._start_simulation_mode()
+            except Exception as e:
+                print(f"Erreur lors du chargement: {e}")
+                return False
+        return False
+    
+    def get_audio_chunk(self):
+        """Obtenir le prochain chunk audio"""
+        if self.audio_data and self.position < len(self.audio_data):
+            chunk = self.audio_data[self.position:self.position + self.chunk_size]
+            self.position += len(chunk)
+            return chunk
+        return None
+    
+    def next_track(self):
+        """Passer à la piste suivante"""
+        if self.playlist:
+            self.current_index = (self.current_index + 1) % len(self.playlist)
+            return self.load_current_track()
+        return False
+    
+    def previous_track(self):
+        """Revenir à la piste précédente"""
+        if self.playlist:
+            self.current_index = (self.current_index - 1) % len(self.playlist)
+            return self.load_current_track()
+        return False
 
-        except Exception as e:
-            logger.error(f"Erreur lors du démarrage de la diffusion: {e}")
-            return self._start_simulation_mode()
-
-    def _load_ogg_file(self, file_path):
-        try:
-            from pydub import AudioSegment
-            audio = AudioSegment.from_ogg(file_path)
-            audio = audio.set_frame_rate(44100).set_channels(2)
-            self.audio_data = audio.raw_data
-            self.sample_rate = audio.frame_rate
-            self.channels = audio.channels
-            return True
-        except ImportError:
-            logger.warning("pydub n'est pas installé. Impossible de lire les fichiers OGG.")
-            logger.info("Installez pydub avec: pip install pydub")
-            return False
-        except Exception as e:
-            logger.error(f"Erreur lors du chargement du fichier OGG: {e}")
-            return False
-
-    def _load_wav_file(self, file_path):
-        try:
-            with wave.open(file_path, 'rb') as wav_file:
-                self.sample_rate = wav_file.getframerate()
-                self.channels = wav_file.getnchannels()
-                self.audio_data = wav_file.readframes(wav_file.getnframes())
-            return True
-        except Exception as e:
-            logger.error(f"Erreur lors du chargement du fichier WAV: {e}")
-            return False
-
-    def _load_mp3_file(self, file_path):
-        try:
-            from pydub import AudioSegment
-            audio = AudioSegment.from_mp3(file_path)
-            audio = audio.set_frame_rate(44100).set_channels(2)
-            self.audio_data = audio.raw_data
-            self.sample_rate = audio.frame_rate
-            self.channels = audio.channels
-            return True
-        except ImportError:
-            logger.warning("pydub n'est pas installé. Impossible de lire les fichiers MP3.")
-            logger.info("Installez pydub avec: pip install pydub")
-            return False
-        except Exception as e:
-            logger.error(f"Erreur lors du chargement du fichier MP3: {e}")
-            return False
-
-    def _start_simulation_mode(self):
-        global is_streaming, stream_info
-        self.is_active = True
-        is_streaming = True
-        stream_info['status'] = 'streaming'
-        stream_info['start_time'] = datetime.now().isoformat()
-        stream_info['current_file'] = 'Simulation (bruit blanc)'
-
-        streaming_thread = threading.Thread(target=self._stream_simulation)
-        streaming_thread.daemon = True
-        streaming_thread.start()
-
-        logger.info("Mode simulation activé - diffusion de bruit blanc")
-        return True
-
-    def stop_stream(self):
-        global is_streaming, stream_info
-        self.is_active = False
-        is_streaming = False
-        stream_info['status'] = 'stopped'
-        stream_info['start_time'] = None
-        stream_info['current_file'] = None
-        self.current_position = 0
-        socketio.emit('stream_stopped')
-        logger.info("Diffusion audio arrêtée")
-
-    def _stream_audio(self):
-        if not self.audio_data:
-            return
-
-        bytes_per_sample = 2  # 16-bit audio
-        chunk_size = self.chunk_size * self.channels * bytes_per_sample
-        total_chunks = len(self.audio_data) // chunk_size
-
-        while self.is_active:
-            start_pos = self.current_position * chunk_size
-            end_pos = min(start_pos + chunk_size, len(self.audio_data))
-
-            if start_pos >= len(self.audio_data):
-                if self.loop_enabled:
-                    self.current_position = 0
-                    continue
-                else:
-                    self.stop_stream()
-                    break
-
-            chunk = self.audio_data[start_pos:end_pos]
-            encoded_chunk = base64.b64encode(chunk).decode('utf-8')
-            socketio.emit('audio_chunk', {
-                'data': encoded_chunk,
-                'sample_rate': self.sample_rate,
-                'channels': self.channels,
-                'chunk_index': self.current_position,
-                'total_chunks': total_chunks,
-                'timestamp': time.time()
-            })
-
-            self.current_position += 1
-            sleep_time = self.chunk_size / self.sample_rate
-            time.sleep(sleep_time)
-
-    def _stream_simulation(self):
-        import random
-        chunk_counter = 0
-        while self.is_active:
-            import math
-            frequency = 440
-            amplitude = 0.1
-            chunk_data = []
-            for i in range(self.chunk_size):
-                sample_time = (chunk_counter * self.chunk_size + i) / self.sample_rate
-                sample_value = int(amplitude * 32767 * math.sin(2 * math.pi * frequency * sample_time))
-                sample_bytes = sample_value.to_bytes(2, 'little', signed=True)
-                chunk_data.extend(sample_bytes)
-                chunk_data.extend(sample_bytes)  # stéréo
-            encoded_chunk = base64.b64encode(bytes(chunk_data)).decode('utf-8')
-            socketio.emit('audio_chunk', {
-                'data': encoded_chunk,
-                'sample_rate': self.sample_rate,
-                'channels': 2,
-                'chunk_index': chunk_counter,
-                'is_simulation': True,
-                'timestamp': time.time()
-            })
-            chunk_counter += 1
-            time.sleep(0.1)
-
-# Instance du streamer
-audio_streamer = AudioStreamer()
-
-@app.route('/api/audio/upload', methods=['POST'])
-def upload_audio():
-    if 'file' not in request.files:
-        return jsonify({'success': False, 'message': 'Aucun fichier envoyé'})
-    file = request.files['file']
-    if file.filename == '':
-        return jsonify({'success': False, 'message': 'Nom de fichier vide'})
-    if file and file.filename.lower().endswith(('.mp3', '.wav', '.ogg')):
-        save_path = os.path.join(AUDIO_FOLDER, file.filename)
-        file.save(save_path)
-        return jsonify({'success': True, 'filename': file.filename})
-    return jsonify({'success': False, 'message': 'Format non supporté'})
+# Instance globale du streamer
+streamer = AudioStreamer()
 
 @app.route('/')
 def index():
+    """Page principale du client web"""
     return render_template('index.html')
-
-@app.route('/shutdown', methods=['POST'])
-def shutdown():
-    func = request.environ.get('werkzeug.server.shutdown')
-    if func is None:
-        raise RuntimeError('Not running with the Werkzeug Server')
-    func()
-    return 'Server shutting down...'
 
 @app.route('/admin')
 def admin():
+    """Page d'administration"""
     return render_template('admin.html')
 
-@app.route('/api/stream/start', methods=['POST'])
-def start_stream():
-    try:
-        data = request.get_json() or {}
-        audio_file = data.get('audio_file')
-        if audio_file:
-            audio_file_path = os.path.join(AUDIO_FOLDER, audio_file)
-        else:
-            audio_file_path = None
-        success = audio_streamer.start_stream(audio_file_path)
-        if success:
-            socketio.emit('stream_started', {
-                'title': stream_info['title'],
-                'start_time': stream_info['start_time'],
-                'current_file': stream_info['current_file']
-            })
-            return jsonify({
-                'success': True,
-                'message': 'Diffusion démarrée',
-                'current_file': stream_info['current_file']
-            })
-        else:
-            return jsonify({'success': False, 'message': 'Erreur lors du démarrage'})
-    except Exception as e:
-        logger.error(f"Erreur API start_stream: {e}")
-        return jsonify({'success': False, 'message': str(e)})
-
-@app.route('/api/stream/stop', methods=['POST'])
-def stop_stream():
-    try:
-        audio_streamer.stop_stream()
-        return jsonify({'success': True, 'message': 'Diffusion arrêtée'})
-    except Exception as e:
-        logger.error(f"Erreur API stop_stream: {e}")
-        return jsonify({'success': False, 'message': str(e)})
-
-@app.route('/api/stream/status', methods=['GET'])
-def get_stream_status():
+@app.route('/api/playlist')
+def get_playlist():
+    """Obtenir la playlist"""
     return jsonify({
-        'is_streaming': is_streaming,
-        'listeners': len(connected_clients),
-        'stream_info': stream_info
+        'playlist': streamer.playlist,
+        'current_index': streamer.current_index,
+        'is_playing': streamer.is_playing
     })
 
-@app.route('/api/audio/files', methods=['GET'])
-def list_audio_files():
-    try:
-        if not os.path.exists(AUDIO_FOLDER):
-            os.makedirs(AUDIO_FOLDER, exist_ok=True)
-        audio_files = []
-        supported_formats = ['.wav', '.mp3', '.ogg']
-        for file in os.listdir(AUDIO_FOLDER):
-            if any(file.lower().endswith(fmt) for fmt in supported_formats):
-                file_path = os.path.join(AUDIO_FOLDER, file)
-                file_size = os.path.getsize(file_path)
-                audio_files.append({
-                    'name': file,
-                    'size': file_size,
-                    'is_default': file == DEFAULT_AUDIO_FILE
-                })
-        return jsonify({
-            'files': audio_files,
-            'default_file': DEFAULT_AUDIO_FILE
+@app.route('/api/upload', methods=['POST'])
+def upload_file():
+    """Upload d'un fichier audio"""
+    if 'audio' not in request.files:
+        return jsonify({'error': 'Aucun fichier'}), 400
+    
+    file = request.files['audio']
+    if file.filename == '':
+        return jsonify({'error': 'Aucun fichier sélectionné'}), 400
+    
+    # Créer le dossier uploads s'il n'existe pas
+    uploads_dir = 'uploads'
+    if not os.path.exists(uploads_dir):
+        os.makedirs(uploads_dir)
+    
+    # Sauvegarder le fichier
+    filepath = os.path.join(uploads_dir, file.filename)
+    file.save(filepath)
+    
+    # Ajouter à la playlist
+    if streamer.add_track(filepath):
+        return jsonify({'success': True, 'message': 'Fichier ajouté à la playlist'})
+    else:
+        return jsonify({'error': 'Erreur lors de l\'ajout du fichier'}), 500
+
+@app.route('/api/add_local', methods=['POST'])
+def add_local_file():
+    """Ajouter un fichier local à la playlist"""
+    data = request.get_json()
+    filepath = data.get('filepath')
+    
+    if streamer.add_track(filepath):
+        return jsonify({'success': True, 'message': 'Fichier ajouté à la playlist'})
+    else:
+        return jsonify({'error': 'Fichier non trouvé ou erreur'}), 400
+
+@app.route('/stream')
+def audio_stream():
+    """Stream audio principal"""
+    def generate_audio():
+        while True:
+            if streamer.is_playing and streamer.current_track:
+                chunk = streamer.get_audio_chunk()
+                if chunk:
+                    yield chunk
+                else:
+                    # Fin de la piste, passer à la suivante
+                    if streamer.next_track():
+                        socketio.emit('track_changed', {
+                            'track': streamer.current_track,
+                            'index': streamer.current_index
+                        })
+                    else:
+                        time.sleep(0.1)
+            else:
+                time.sleep(0.1)
+    
+    return Response(generate_audio(), 
+                   mimetype='audio/mpeg',
+                   headers={'Cache-Control': 'no-cache'})
+
+# Routes de contrôle
+@app.route('/api/play')
+def play():
+    """Démarrer la lecture"""
+    if not streamer.current_track and streamer.playlist:
+        streamer.load_current_track()
+    
+    streamer.is_playing = True
+    socketio.emit('playback_state', {'is_playing': True})
+    return jsonify({'success': True})
+
+@app.route('/api/pause')
+def pause():
+    """Mettre en pause"""
+    streamer.is_playing = False
+    socketio.emit('playback_state', {'is_playing': False})
+    return jsonify({'success': True})
+
+@app.route('/api/next')
+def next_track():
+    """Piste suivante"""
+    if streamer.next_track():
+        socketio.emit('track_changed', {
+            'track': streamer.current_track,
+            'index': streamer.current_index
         })
-    except Exception as e:
-        logger.error(f"Erreur lors de la liste des fichiers: {e}")
-        return jsonify({'error': str(e)})
+        return jsonify({'success': True, 'track': streamer.current_track})
+    return jsonify({'error': 'Aucune piste suivante'}), 400
 
+@app.route('/api/previous')
+def previous_track():
+    """Piste précédente"""
+    if streamer.previous_track():
+        socketio.emit('track_changed', {
+            'track': streamer.current_track,
+            'index': streamer.current_index
+        })
+        return jsonify({'success': True, 'track': streamer.current_track})
+    return jsonify({'error': 'Aucune piste précédente'}), 400
+
+@app.route('/api/select/<int:index>')
+def select_track(index):
+    """Sélectionner une piste spécifique"""
+    if 0 <= index < len(streamer.playlist):
+        streamer.current_index = index
+        if streamer.load_current_track():
+            socketio.emit('track_changed', {
+                'track': streamer.current_track,
+                'index': streamer.current_index
+            })
+            return jsonify({'success': True, 'track': streamer.current_track})
+    return jsonify({'error': 'Index invalide'}), 400
+
+# WebSocket events
 @socketio.on('connect')
-def handle_connect():
-    client_id = request.sid
-    connected_clients.add(client_id)
-    stream_info['listeners'] = len(connected_clients)
-    logger.info(f"Client connecté: {client_id}")
-    emit('stream_status', {
-        'is_streaming': is_streaming,
-        'stream_info': stream_info
+def on_connect():
+    """Nouveau client connecté"""
+    streamer.clients.add(request.sid)
+    emit('connected', {
+        'message': 'Connecté au serveur audio',
+        'current_track': streamer.current_track,
+        'is_playing': streamer.is_playing
     })
-    socketio.emit('listeners_update', {
-        'count': len(connected_clients)
-    })
+    print(f"Client connecté: {request.sid}")
 
 @socketio.on('disconnect')
-def handle_disconnect():
-    client_id = request.sid
-    connected_clients.discard(client_id)
-    stream_info['listeners'] = len(connected_clients)
-    logger.info(f"Client déconnecté: {client_id}")
-    socketio.emit('listeners_update', {
-        'count': len(connected_clients)
-    })
+def on_disconnect():
+    """Client déconnecté"""
+    streamer.clients.discard(request.sid)
+    print(f"Client déconnecté: {request.sid}")
 
-@socketio.on('join_stream')
-def handle_join_stream():
-    client_id = request.sid
-    join_room('audio_stream')
-    emit('joined_stream', {
-        'message': 'Connecté au flux audio',
-        'is_streaming': is_streaming,
-        'stream_info': stream_info
-    })
-
-@socketio.on('leave_stream')
-def handle_leave_stream():
-    client_id = request.sid
-    leave_room('audio_stream')
-    emit('left_stream', {
-        'message': 'Déconnecté du flux audio'
-    })
-
-def create_sample_audio_file():
-    if not os.path.exists(AUDIO_FOLDER):
-        os.makedirs(AUDIO_FOLDER, exist_ok=True)
-    sample_file = os.path.join(AUDIO_FOLDER, 'sample.wav')
-    if not os.path.exists(sample_file):
-        try:
-            import wave
-            import math
-            sample_rate = 44100
-            duration = 10
-            frequency = 440
-            samples = []
-            for i in range(int(sample_rate * duration)):
-                sample_time = i / sample_rate
-                sample_value = int(16384 * math.sin(2 * math.pi * frequency * sample_time))
-                samples.append(sample_value)
-            with wave.open(sample_file, 'w') as wav_file:
-                wav_file.setnchannels(2)
-                wav_file.setsampwidth(2)
-                wav_file.setframerate(sample_rate)
-                for sample in samples:
-                    wav_file.writeframes(sample.to_bytes(2, 'little', signed=True))
-                    wav_file.writeframes(sample.to_bytes(2, 'little', signed=True))
-            logger.info(f"Fichier audio d'exemple créé: {sample_file}")
-        except Exception as e:
-            logger.error(f"Erreur lors de la création du fichier d'exemple: {e}")
-
-@socketio.on('player_command')
-def handle_player_command(data):
-    emit('player_command', data, broadcast=True)
+@socketio.on('join_room')
+def on_join_room(data):
+    """Rejoindre une room"""
+    room = data['room']
+    join_room(room)
+    emit('status', {'message': f'Rejoint la room {room}'})
 
 if __name__ == '__main__':
-    for folder in ['templates', 'static', AUDIO_FOLDER]:
-        if not os.path.exists(folder):
-            os.makedirs(folder)
-    create_sample_audio_file()
-    print("🎵 Serveur de diffusion audio en continu")
-    print("📡 Démarrage du serveur...")
-    print("🌐 Interface web: http://localhost:5000")
-    print("⚙️  Administration: http://localhost:5000/admin")
-    print(f"🎼 Fichier audio par défaut: {DEFAULT_AUDIO_FILE}")
-    print(f"📁 Dossier audio: {AUDIO_FOLDER}")
-    default_path = os.path.join(AUDIO_FOLDER, DEFAULT_AUDIO_FILE)
-    if os.path.exists(default_path):
-        print(f"✅ Fichier par défaut trouvé: {default_path}")
-    else:
-        print(f"⚠️  Fichier par défaut non trouvé: {default_path}")
-        print("   Mode simulation activé automatiquement")
+    # Créer les dossiers nécessaires
+    os.makedirs('templates', exist_ok=True)
+    os.makedirs('static', exist_ok=True)
+    os.makedirs('uploads', exist_ok=True)
+    
+    print("Serveur de diffusion audio démarré!")
+    print("Interface client: http://localhost:5000")
+    print("Interface admin: http://localhost:5000/admin")
+    print("Stream audio: http://localhost:5000/stream")
+    
     socketio.run(app, debug=True, host='0.0.0.0', port=5000)
