@@ -86,36 +86,32 @@
             border-radius: 10px;
         }
 
-        .controls {
-            display: flex;
-            justify-content: center;
-            gap: 15px;
-            margin-bottom: 20px;
+        /* Cacher les contrôles natifs du lecteur audio */
+        .audio-player::-webkit-media-controls-play-button,
+        .audio-player::-webkit-media-controls-pause-button {
+            display: none !important;
         }
 
-        .control-btn {
+        .playback-status {
             background: #667eea;
             color: white;
-            border: none;
-            padding: 12px 16px;
-            border-radius: 50%;
-            cursor: pointer;
+            padding: 15px;
+            border-radius: 10px;
+            margin-bottom: 15px;
             font-size: 16px;
-            transition: all 0.3s ease;
-            width: 48px;
-            height: 48px;
-            display: flex;
-            align-items: center;
-            justify-content: center;
+            font-weight: bold;
         }
 
-        .control-btn:hover {
-            background: #5a6fd8;
-            transform: scale(1.1);
+        .playback-status.playing {
+            background: #4CAF50;
         }
 
-        .control-btn:active {
-            transform: scale(0.95);
+        .playback-status.paused {
+            background: #ff9800;
+        }
+
+        .playback-status.stopped {
+            background: #f44336;
         }
 
         .volume-control {
@@ -154,18 +150,13 @@
         .playlist-item {
             padding: 10px 15px;
             border-bottom: 1px solid #f0f0f0;
-            cursor: pointer;
-            transition: background-color 0.2s;
             text-align: left;
-        }
-
-        .playlist-item:hover {
-            background-color: #f8f9fa;
         }
 
         .playlist-item.current {
             background-color: #667eea;
             color: white;
+            font-weight: bold;
         }
 
         .playlist-item:last-child {
@@ -191,20 +182,20 @@
             font-size: 14px;
         }
 
+        .admin-notice {
+            background: #fff3e0;
+            color: #f57c00;
+            padding: 12px;
+            border-radius: 8px;
+            margin-bottom: 20px;
+            font-size: 14px;
+            border-left: 4px solid #ff9800;
+        }
+
         @media (max-width: 480px) {
             .player-container {
                 padding: 20px;
                 margin: 10px;
-            }
-            
-            .controls {
-                gap: 10px;
-            }
-            
-            .control-btn {
-                width: 40px;
-                height: 40px;
-                font-size: 14px;
             }
         }
     </style>
@@ -218,22 +209,24 @@
             </div>
         </div>
 
+        <div class="admin-notice">
+            ℹ️ Mode écoute seulement - Les contrôles sont gérés par l'administrateur
+        </div>
+
+        <div id="playbackStatus" class="playback-status stopped">
+            ⏹️ Arrêté
+        </div>
+
         <div class="track-info">
             <div id="trackTitle" class="track-title">Aucune piste</div>
             <div id="trackArtist" class="track-artist">-</div>
             <div id="trackAlbum" class="track-album">-</div>
         </div>
 
-        <audio id="audioPlayer" class="audio-player" controls>
+        <audio id="audioPlayer" class="audio-player" preload="auto">
             <source src="/stream" type="audio/mpeg">
             Votre navigateur ne supporte pas l'audio HTML5.
         </audio>
-
-        <div class="controls">
-            <button class="control-btn" onclick="previousTrack()">⏮️</button>
-            <button class="control-btn" id="playPauseBtn" onclick="togglePlayPause()">▶️</button>
-            <button class="control-btn" onclick="nextTrack()">⏭️</button>
-        </div>
 
         <div class="volume-control">
             <span>🔊</span>
@@ -278,39 +271,94 @@
             });
 
             socket.on('connected', function(data) {
-                console.log('Réponse du serveur:', data);
+                console.log('Connecté au serveur:', data);
                 if (data.current_track) {
                     updateTrackInfo(data.current_track);
                 }
                 updatePlaybackState(data.is_playing);
+                currentIndex = data.current_index || 0;
+                currentPlaylist = data.playlist || [];
+                displayPlaylist();
             });
 
-            socket.on('track_changed', function(data) {
+            // Événements spécifiques de l'admin
+            socket.on('admin_play', function(data) {
+                console.log('Admin: Play forcé', data);
                 updateTrackInfo(data.track);
                 currentIndex = data.index;
-                loadPlaylist(); // Recharger pour mettre à jour l'indicateur current
-                showStatus(`Lecture: ${data.track.title}`);
+                forcePlay();
+                displayPlaylist();
+                showStatus(`▶️ Lecture: ${data.track.title}`);
             });
 
-            socket.on('playback_state', function(data) {
-                updatePlaybackState(data.is_playing);
+            socket.on('admin_pause', function(data) {
+                console.log('Admin: Pause forcée', data);
+                forcePause();
+                showStatus('⏸️ Mis en pause par l\'administrateur');
+            });
+
+            socket.on('admin_track_change', function(data) {
+                console.log('Admin: Changement de piste', data);
+                updateTrackInfo(data.track);
+                currentIndex = data.index;
+                displayPlaylist();
+                
+                // Recharger l'audio stream
+                reloadAudioStream();
+                
+                if (data.is_playing) {
+                    setTimeout(() => forcePlay(), 500);
+                }
+                
+                showStatus(`🎵 Nouvelle piste: ${data.track.title}`);
+            });
+
+            socket.on('playlist_updated', function(data) {
+                currentPlaylist = data.playlist;
+                currentIndex = data.current_index;
+                displayPlaylist();
+                showStatus('Playlist mise à jour');
             });
         }
 
         function initializeAudioPlayer() {
             const audio = document.getElementById('audioPlayer');
             
-            audio.addEventListener('play', function() {
-                updatePlaybackState(true);
+            // Empêcher les contrôles manuels
+            audio.addEventListener('play', function(e) {
+                if (!isPlaying) {
+                    // Si on n'est pas censé jouer, on arrête
+                    e.preventDefault();
+                    audio.pause();
+                }
             });
 
-            audio.addEventListener('pause', function() {
-                updatePlaybackState(false);
+            audio.addEventListener('pause', function(e) {
+                if (isPlaying) {
+                    // Si on est censé jouer, on remet en lecture
+                    setTimeout(() => {
+                        if (isPlaying) {
+                            audio.play().catch(console.error);
+                        }
+                    }, 100);
+                }
             });
 
             audio.addEventListener('error', function(e) {
                 console.error('Erreur audio:', e);
                 showStatus('Erreur de lecture audio');
+                updatePlaybackStatus('error');
+            });
+
+            audio.addEventListener('loadstart', function() {
+                console.log('Chargement audio...');
+            });
+
+            audio.addEventListener('canplay', function() {
+                console.log('Audio prêt à jouer');
+                if (isPlaying) {
+                    audio.play().catch(console.error);
+                }
             });
         }
 
@@ -354,54 +402,80 @@
 
         function updatePlaybackState(playing) {
             isPlaying = playing;
-            const btn = document.getElementById('playPauseBtn');
+            updatePlaybackStatus(playing ? 'playing' : 'paused');
+        }
+
+        function updatePlaybackStatus(status) {
+            const statusDiv = document.getElementById('playbackStatus');
+            
+            switch(status) {
+                case 'playing':
+                    statusDiv.textContent = '▶️ En lecture';
+                    statusDiv.className = 'playback-status playing';
+                    break;
+                case 'paused':
+                    statusDiv.textContent = '⏸️ En pause';
+                    statusDiv.className = 'playback-status paused';
+                    break;
+                case 'error':
+                    statusDiv.textContent = '❌ Erreur';
+                    statusDiv.className = 'playback-status stopped';
+                    break;
+                default:
+                    statusDiv.textContent = '⏹️ Arrêté';
+                    statusDiv.className = 'playback-status stopped';
+            }
+        }
+
+        function forcePlay() {
             const audio = document.getElementById('audioPlayer');
-
-            if (playing) {
-                btn.textContent = '⏸️';
-                audio.play().catch(e => console.error('Erreur play:', e));
-            } else {
-                btn.textContent = '▶️';
-                audio.pause();
-            }
-        }
-
-        function togglePlayPause() {
-            if (isPlaying) {
-                fetch('/api/pause');
-            } else {
-                fetch('/api/play');
-            }
-        }
-
-        function nextTrack() {
-            fetch('/api/next')
-                .then(response => response.json())
-                .then(data => {
-                    if (data.error) {
-                        showStatus(data.error);
-                    }
+            isPlaying = true;
+            updatePlaybackStatus('playing');
+            
+            // Recharger le stream et jouer
+            reloadAudioStream();
+            setTimeout(() => {
+                audio.play().catch(error => {
+                    console.error('Erreur play:', error);
+                    // Retry une fois
+                    setTimeout(() => audio.play().catch(console.error), 1000);
                 });
+            }, 500);
         }
 
-        function previousTrack() {
-            fetch('/api/previous')
-                .then(response => response.json())
-                .then(data => {
-                    if (data.error) {
-                        showStatus(data.error);
-                    }
-                });
+        function forcePause() {
+            const audio = document.getElementById('audioPlayer');
+            isPlaying = false;
+            updatePlaybackStatus('paused');
+            audio.pause();
+        }
+
+        function reloadAudioStream() {
+            const audio = document.getElementById('audioPlayer');
+            const currentTime = audio.currentTime;
+            
+            // Forcer le rechargement du stream
+            audio.src = '/stream?t=' + Date.now();
+            audio.load();
         }
 
         function loadPlaylist() {
             fetch('/api/playlist')
                 .then(response => response.json())
                 .then(data => {
-                    currentPlaylist = data.playlist;
-                    currentIndex = data.current_index;
+                    currentPlaylist = data.playlist || [];
+                    currentIndex = data.current_index || 0;
+                    
+                    if (data.current_track) {
+                        updateTrackInfo(data.current_track);
+                    }
+                    
+                    updatePlaybackState(data.is_playing || false);
                     displayPlaylist();
-                    updatePlaybackState(data.is_playing);
+                })
+                .catch(error => {
+                    console.error('Erreur playlist:', error);
+                    showStatus('Erreur lors du chargement de la playlist');
                 });
         }
 
@@ -415,24 +489,13 @@
             let html = '';
             currentPlaylist.forEach((track, index) => {
                 html += `
-                    <div class="playlist-item ${index === currentIndex ? 'current' : ''}" 
-                         onclick="selectTrack(${index})">
+                    <div class="playlist-item ${index === currentIndex ? 'current' : ''}">
                         <div class="playlist-item-title">${track.title || track.filename}</div>
                         <div class="playlist-item-artist">${track.artist || 'Inconnu'}</div>
                     </div>
                 `;
             });
             playlistDiv.innerHTML = html;
-        }
-
-        function selectTrack(index) {
-            fetch(`/api/select/${index}`)
-                .then(response => response.json())
-                .then(data => {
-                    if (data.error) {
-                        showStatus(data.error);
-                    }
-                });
         }
 
         function showStatus(message) {
@@ -447,6 +510,13 @@
 
         // Rafraîchir la playlist toutes les 30 secondes
         setInterval(loadPlaylist, 30000);
+
+        // Demander une synchronisation au serveur toutes les 10 secondes
+        setInterval(() => {
+            if (socket && socket.connected) {
+                socket.emit('request_sync');
+            }
+        }, 10000);
     </script>
 </body>
 </html>
