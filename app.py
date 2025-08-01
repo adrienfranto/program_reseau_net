@@ -362,14 +362,16 @@ if __name__ == '__main__':
     os.makedirs('templates', exist_ok=True)
     os.makedirs('static', exist_ok=True)
     os.makedirs('uploads', exist_ok=True)
-    
+
     print("=" * 50)
     print("🎵 SERVEUR DE DIFFUSION AUDIO DÉMARRÉ")
     print("=" * 50)
-    print("Interface client: http://localhost:5000")
-    print("Interface admin: http://localhost:5000/admin")
-    print("Stream audio: http://localhost:5000/stream")
+    print("Interface client: http://localhost:PORT")
+    print("Interface admin: http://localhost:PORT/admin")
+    print("Stream audio: http://localhost:PORT/stream")
     print("=" * 50)
-    
-    # Démarrer le serveur
-    socketio.run(app, debug=True, host='0.0.0.0', port=5000)
+
+    # Pour Render, récupérer le port via l'environnement
+    port = int(os.environ.get('PORT', 5000))
+    socketio.run(app, host='0.0.0.0', port=port)
+    print(f"Serveur démarré sur le port {port}")
